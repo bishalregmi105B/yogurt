@@ -294,7 +294,7 @@
 &fpc {
 
 		interrupt-parent = <&pio>;
-		interrupts = <5 IRQ_TYPE_EDGE_FALLING 5 0>;
+		interrupts = <5 IRQ_TYPE_EDGE_RISING 5 0>;
 		pinctrl-names = "default",
 			"fpc_eint_as_int",
 			"fpc_pins_rst_high", "fpc_pins_rst_low","fpc_pins_pwr_high", "fpc_pins_pwr_low",
