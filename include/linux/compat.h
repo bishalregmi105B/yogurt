@@ -746,6 +746,12 @@ asmlinkage long compat_sys_fanotify_mark(int, unsigned int, __u32, __u32,
 					    int, const char __user *);
 
 asmlinkage long compat_sys_arch_prctl(int option, unsigned long arg2);
+asmlinkage long compat_sys_epoll_pwait2(int epfd,
+					struct epoll_event __user *events,
+					int maxevents,
+					const struct timespec64 __user *timeout,
+					const compat_sigset_t __user *sigmask,
+					compat_size_t sigsetsize);
 
 /*
  * For most but not all architectures, "am I in a compat syscall?" and

@@ -361,7 +361,7 @@ HOST_LFS_CFLAGS := $(shell getconf LFS_CFLAGS 2>/dev/null)
 HOST_LFS_LDFLAGS := $(shell getconf LFS_LDFLAGS 2>/dev/null)
 HOST_LFS_LIBS := $(shell getconf LFS_LIBS 2>/dev/null)
 
-ifneq ($(LLVM),)
+ifeq ($(LLVM),1)
 HOSTCC	= clang
 HOSTCXX	= clang++
 else
@@ -376,7 +376,7 @@ HOST_LOADLIBES := $(HOST_LFS_LIBS)
 
 # Make variables (CC, etc...)
 CPP		= $(CC) -E
-ifneq ($(LLVM),)
+ifeq ($(LLVM),1)
 CC		= clang
 LD		= ld.lld
 AR		= llvm-ar

@@ -1737,6 +1737,20 @@ static inline struct timespec64 ep_set_mstimeout(long ms)
 	return timespec64_add_safe(now, ts);
 }
 
+static inline struct timespec64 *ep_timeout_to_timespec(struct timespec64 *to,
+							long ms)
+{
+	if (ms < 0)
+		return NULL;
+	if (!ms) {
+		to->tv_sec = 0;
+		to->tv_nsec = 0;
+		return to;
+	}
+	*to = ep_set_mstimeout(ms);
+	return to;
+}
+
 /**
  * ep_poll - Retrieves ready events, and delivers them to the caller supplied
  *           event buffer.
@@ -1755,7 +1769,7 @@ static inline struct timespec64 ep_set_mstimeout(long ms)
  *          error code, in case of error.
  */
 static int ep_poll(struct eventpoll *ep, struct epoll_event __user *events,
-		   int maxevents, long timeout)
+		   int maxevents, const struct timespec64 *timeout)
 {
 	int res = 0, eavail, timed_out = 0;
 	unsigned long flags;
@@ -1763,13 +1777,13 @@ static int ep_poll(struct eventpoll *ep, struct epoll_event __user *events,
 	wait_queue_entry_t wait;
 	ktime_t expires, *to = NULL;
 
-	if (timeout > 0) {
-		struct timespec64 end_time = ep_set_mstimeout(timeout);
+	if (timeout && (timeout->tv_sec | timeout->tv_nsec)) {
+		struct timespec64 end_time = *timeout;
 
 		slack = select_estimate_accuracy(&end_time);
 		to = &expires;
 		*to = timespec64_to_ktime(end_time);
-	} else if (timeout == 0) {
+	} else if (timeout) {
 		/*
 		 * Avoid the unnecessary trip to the wait queue loop, if the
 		 * caller specified a non blocking operation.
@@ -2170,8 +2184,8 @@ error_return:
  * Implement the event wait interface for the eventpoll file. It is the kernel
  * part of the user space epoll_wait(2).
  */
-SYSCALL_DEFINE4(epoll_wait, int, epfd, struct epoll_event __user *, events,
-		int, maxevents, int, timeout)
+static int do_epoll_wait(int epfd, struct epoll_event __user *events,
+			 int maxevents, struct timespec64 *to)
 {
 	int error;
 	struct fd f;
@@ -2205,11 +2219,20 @@ SYSCALL_DEFINE4(epoll_wait, int, epfd, struct epoll_event __user *, events,
 	ep = f.file->private_data;
 
 	/* Time to fish for events ... */
-	error = ep_poll(ep, events, maxevents, timeout);
+	error = ep_poll(ep, events, maxevents, to);
 
 error_fput:
 	fdput(f);
 	return error;
+}
+
+SYSCALL_DEFINE4(epoll_wait, int, epfd, struct epoll_event __user *, events,
+		int, maxevents, int, timeout)
+{
+	struct timespec64 to;
+
+	return do_epoll_wait(epfd, events, maxevents,
+			     ep_timeout_to_timespec(&to, timeout));
 }
 
 /*
@@ -2256,6 +2279,51 @@ SYSCALL_DEFINE6(epoll_pwait, int, epfd, struct epoll_event __user *, events,
 	return error;
 }
 
+SYSCALL_DEFINE6(epoll_pwait2, int, epfd, struct epoll_event __user *, events,
+		int, maxevents, const struct timespec64 __user *, timeout,
+		const sigset_t __user *, sigmask, size_t, sigsetsize)
+{
+	struct timespec64 ts, *to = NULL;
+	sigset_t ksigmask, sigsaved;
+	int error;
+
+	if (timeout) {
+		struct timespec64 now;
+
+		if (copy_from_user(&ts, timeout, sizeof(ts)))
+			return -EFAULT;
+		if (!timespec64_valid(&ts))
+			return -EINVAL;
+		if (ts.tv_sec || ts.tv_nsec) {
+			ktime_get_ts64(&now);
+			ts = timespec64_add_safe(now, ts);
+		}
+		to = &ts;
+	}
+
+	if (sigmask) {
+		if (sigsetsize != sizeof(sigset_t))
+			return -EINVAL;
+		if (copy_from_user(&ksigmask, sigmask, sizeof(ksigmask)))
+			return -EFAULT;
+		sigsaved = current->blocked;
+		set_current_blocked(&ksigmask);
+	}
+
+	error = do_epoll_wait(epfd, events, maxevents, to);
+
+	if (sigmask) {
+		if (error == -EINTR) {
+			memcpy(&current->saved_sigmask, &sigsaved,
+			       sizeof(sigsaved));
+			set_restore_sigmask();
+		} else
+			set_current_blocked(&sigsaved);
+	}
+
+	return error;
+}
+
 #ifdef CONFIG_COMPAT
 COMPAT_SYSCALL_DEFINE6(epoll_pwait, int, epfd,
 			struct epoll_event __user *, events,
@@ -2289,6 +2357,56 @@ COMPAT_SYSCALL_DEFINE6(epoll_pwait, int, epfd,
 	 * signal mask yet, and we allow do_signal() to deliver the signal on
 	 * the way back to userspace, before the signal mask is restored.
 	 */
+	if (sigmask) {
+		if (err == -EINTR) {
+			memcpy(&current->saved_sigmask, &sigsaved,
+			       sizeof(sigsaved));
+			set_restore_sigmask();
+		} else
+			set_current_blocked(&sigsaved);
+	}
+
+	return err;
+}
+
+COMPAT_SYSCALL_DEFINE6(epoll_pwait2, int, epfd,
+			struct epoll_event __user *, events,
+			int, maxevents,
+			const struct timespec64 __user *, timeout,
+			const compat_sigset_t __user *, sigmask,
+			compat_size_t, sigsetsize)
+{
+	struct timespec64 ts, *to = NULL;
+	compat_sigset_t csigmask;
+	sigset_t ksigmask, sigsaved;
+	long err;
+
+	if (timeout) {
+		struct timespec64 now;
+
+		if (copy_from_user(&ts, timeout, sizeof(ts)))
+			return -EFAULT;
+		if (!timespec64_valid(&ts))
+			return -EINVAL;
+		if (ts.tv_sec || ts.tv_nsec) {
+			ktime_get_ts64(&now);
+			ts = timespec64_add_safe(now, ts);
+		}
+		to = &ts;
+	}
+
+	if (sigmask) {
+		if (sigsetsize != sizeof(compat_sigset_t))
+			return -EINVAL;
+		if (copy_from_user(&csigmask, sigmask, sizeof(csigmask)))
+			return -EFAULT;
+		sigset_from_compat(&ksigmask, &csigmask);
+		sigsaved = current->blocked;
+		set_current_blocked(&ksigmask);
+	}
+
+	err = do_epoll_wait(epfd, events, maxevents, to);
+
 	if (sigmask) {
 		if (err == -EINTR) {
 			memcpy(&current->saved_sigmask, &sigsaved,

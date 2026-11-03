@@ -817,6 +817,12 @@ __SYSCALL(__NR_pkey_alloc, sys_pkey_alloc)
 __SYSCALL(__NR_pkey_free, sys_pkey_free)
 #define __NR_statx 397
 __SYSCALL(__NR_statx, sys_statx)
+#define __NR_close_range 436
+__SYSCALL(__NR_close_range, sys_close_range)
+#define __NR_faccessat2 439
+__SYSCALL(__NR_faccessat2, sys_faccessat2)
+#define __NR_epoll_pwait2 441
+__SYSCALL(__NR_epoll_pwait2, compat_sys_epoll_pwait2)
 
 /*
  * Please add new compat syscalls above this comment and update

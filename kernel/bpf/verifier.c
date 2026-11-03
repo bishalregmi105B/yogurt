@@ -1317,7 +1317,15 @@ static int check_mem_access(struct bpf_verifier_env *env, int insn_idx, u32 regn
 			verbose("R%d leaks addr into map\n", value_regno);
 			return -EACCES;
 		}
-
+		err = (t == BPF_WRITE) ?
+		      (bpf_map_is_rdonly(reg->map_ptr) ? -EACCES : 0) :
+		      (bpf_map_is_wronly(reg->map_ptr) ? -EACCES : 0);
+		if (err) {
+			verbose("R%d cannot %s map_type %d\n", regno,
+				t == BPF_WRITE ? "write into" : "read from",
+				reg->map_ptr->map_type);
+			return err;
+		}
 		err = check_map_access(env, regno, off, size);
 		if (!err && t == BPF_READ && value_regno >= 0)
 			mark_reg_unknown(regs, value_regno);
@@ -1529,6 +1537,14 @@ static int check_helper_mem_access(struct bpf_verifier_env *env, int regno,
 	case PTR_TO_PACKET:
 		return check_packet_access(env, regno, reg->off, access_size);
 	case PTR_TO_MAP_VALUE:
+		if (meta && meta->raw_mode && bpf_map_is_rdonly(reg->map_ptr)) {
+			verbose("R%d cannot write into rdonly map\n", regno);
+			return -EACCES;
+		}
+		if ((!meta || !meta->raw_mode) && bpf_map_is_wronly(reg->map_ptr)) {
+			verbose("R%d cannot read from wronly map\n", regno);
+			return -EACCES;
+		}
 		return check_map_access(env, regno, reg->off, access_size);
 	default: /* scalar_value|ptr_to_stack or invalid ptr */
 		return check_stack_boundary(env, regno, access_size,
@@ -1749,6 +1765,15 @@ static int check_map_func_compatibility(struct bpf_map *map, int func_id)
 
 	/* ... and second from the function itself. */
 	switch (func_id) {
+	case BPF_FUNC_map_lookup_elem:
+		if (bpf_map_is_wronly(map))
+			goto error;
+		break;
+	case BPF_FUNC_map_update_elem:
+	case BPF_FUNC_map_delete_elem:
+		if (bpf_map_is_rdonly(map))
+			goto error;
+		break;
 	case BPF_FUNC_tail_call:
 		if (map->map_type != BPF_MAP_TYPE_PROG_ARRAY)
 			goto error;

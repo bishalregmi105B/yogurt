@@ -23,6 +23,7 @@
 #include <linux/spinlock.h>
 #include <linux/rcupdate.h>
 #include <linux/workqueue.h>
+#include <uapi/linux/close_range.h>
 
 unsigned int sysctl_nr_open __read_mostly = 1024*1024;
 unsigned int sysctl_nr_open_min = BITS_PER_LONG;
@@ -641,6 +642,109 @@ int __close_fd(struct files_struct *files, unsigned fd)
 out_unlock:
 	spin_unlock(&files->file_lock);
 	return -EBADF;
+}
+
+static inline void __range_cloexec(struct files_struct *cur_fds,
+				   unsigned int fd, unsigned int max_fd)
+{
+	struct fdtable *fdt;
+
+	spin_lock(&cur_fds->file_lock);
+	fdt = files_fdtable(cur_fds);
+	max_fd = min(max_fd, fdt->max_fds - 1);
+	while (fd <= max_fd)
+		__set_close_on_exec(fd++, fdt);
+	spin_unlock(&cur_fds->file_lock);
+}
+
+static inline void __range_close(struct files_struct *cur_fds, unsigned int fd,
+				 unsigned int max_fd)
+{
+	while (fd <= max_fd) {
+		struct file *file = NULL;
+		struct fdtable *fdt;
+
+		spin_lock(&cur_fds->file_lock);
+		fdt = files_fdtable(cur_fds);
+		if (fd >= fdt->max_fds) {
+			spin_unlock(&cur_fds->file_lock);
+			break;
+		}
+		file = fdt->fd[fd];
+		if (file) {
+			/* found a valid file to close */
+			rcu_assign_pointer(fdt->fd[fd], NULL);
+			__clear_close_on_exec(fd, fdt);
+			__put_unused_fd(cur_fds, fd);
+		}
+		spin_unlock(&cur_fds->file_lock);
+
+		if (file) {
+			filp_close(file, cur_fds);
+			cond_resched();
+		}
+		fd++;
+	}
+}
+
+/**
+ * __close_range() - Close all file descriptors in a given range.
+ *
+ * @fd:     starting file descriptor to close
+ * @max_fd: last file descriptor to close
+ * @flags:  CLOSE_RANGE flags
+ *
+ * This closes a range of file descriptors. All file descriptors
+ * from @fd up to and including @max_fd are closed.
+ */
+static int __close_range(unsigned int fd, unsigned int max_fd, unsigned int flags)
+{
+	struct task_struct *me = current;
+	struct files_struct *cur_fds = me->files, *fds = NULL;
+
+	if (flags & ~(CLOSE_RANGE_UNSHARE | CLOSE_RANGE_CLOEXEC))
+		return -EINVAL;
+
+	if (fd > max_fd)
+		return -EINVAL;
+
+	if (flags & CLOSE_RANGE_UNSHARE) {
+		if (cur_fds && atomic_read(&cur_fds->count) > 1) {
+			int err = 0;
+
+			fds = dup_fd(cur_fds, &err);
+			if (!fds)
+				return err;
+			reset_files_struct(fds);
+			cur_fds = fds;
+		}
+	}
+
+	if (!cur_fds)
+		return 0;
+
+	if (flags & CLOSE_RANGE_CLOEXEC) {
+		struct fdtable *fdt;
+
+		rcu_read_lock();
+		fdt = files_fdtable(cur_fds);
+		if (fdt->max_fds == 0) {
+			rcu_read_unlock();
+			return 0;
+		}
+		rcu_read_unlock();
+		__range_cloexec(cur_fds, fd, max_fd);
+	} else {
+		__range_close(cur_fds, fd, max_fd);
+	}
+
+	return 0;
+}
+
+SYSCALL_DEFINE3(close_range, unsigned int, fd, unsigned int, max_fd,
+		unsigned int, flags)
+{
+	return __close_range(fd, max_fd, flags);
 }
 
 void do_close_on_exec(struct files_struct *files)

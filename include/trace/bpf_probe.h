@@ -52,8 +52,33 @@
 #define __CAST10(a,...) __CAST_TO_U64(a), __CAST9(__VA_ARGS__)
 #define __CAST11(a,...) __CAST_TO_U64(a), __CAST10(__VA_ARGS__)
 #define __CAST12(a,...) __CAST_TO_U64(a), __CAST11(__VA_ARGS__)
-/* tracepoints with more than 12 arguments will hit build error */
-#define CAST_TO_U64(...) CONCATENATE(__CAST, COUNT_ARGS(__VA_ARGS__))(__VA_ARGS__)
+#define __CAST13(a,...) __CAST_TO_U64(a), __CAST12(__VA_ARGS__)
+#define __CAST14(a,...) __CAST_TO_U64(a), __CAST13(__VA_ARGS__)
+#define __CAST15(a,...) __CAST_TO_U64(a), __CAST14(__VA_ARGS__)
+#define __CAST16(a,...) __CAST_TO_U64(a), __CAST15(__VA_ARGS__)
+
+#define __BPF_COUNT_ARGS(_0, _1, _2, _3, _4, _5, _6, _7, _8, _9, _10, _11, _12, _13, _14, _15, _16, _n, X...) _n
+#define BPF_COUNT_ARGS(X...) __BPF_COUNT_ARGS(, ##X, 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0)
+
+/* tracepoints with more than 16 arguments will hit build error */
+#define CAST_TO_U64(...) CONCATENATE(__CAST, BPF_COUNT_ARGS(__VA_ARGS__))(__VA_ARGS__)
+
+void bpf_trace_run13(struct bpf_prog *prog, u64 arg1, u64 arg2,
+			u64 arg3, u64 arg4, u64 arg5, u64 arg6, u64 arg7,
+			u64 arg8, u64 arg9, u64 arg10, u64 arg11, u64 arg12,
+			u64 arg13);
+void bpf_trace_run14(struct bpf_prog *prog, u64 arg1, u64 arg2,
+			u64 arg3, u64 arg4, u64 arg5, u64 arg6, u64 arg7,
+			u64 arg8, u64 arg9, u64 arg10, u64 arg11, u64 arg12,
+			u64 arg13, u64 arg14);
+void bpf_trace_run15(struct bpf_prog *prog, u64 arg1, u64 arg2,
+			u64 arg3, u64 arg4, u64 arg5, u64 arg6, u64 arg7,
+			u64 arg8, u64 arg9, u64 arg10, u64 arg11, u64 arg12,
+			u64 arg13, u64 arg14, u64 arg15);
+void bpf_trace_run16(struct bpf_prog *prog, u64 arg1, u64 arg2,
+			u64 arg3, u64 arg4, u64 arg5, u64 arg6, u64 arg7,
+			u64 arg8, u64 arg9, u64 arg10, u64 arg11, u64 arg12,
+			u64 arg13, u64 arg14, u64 arg15, u64 arg16);
 
 #undef DECLARE_EVENT_CLASS
 #define DECLARE_EVENT_CLASS(call, proto, args, tstruct, assign, print)	\
@@ -61,7 +86,7 @@ static notrace void							\
 __bpf_trace_##call(void *__data, proto)					\
 {									\
 	struct bpf_prog *prog = __data;					\
-	CONCATENATE(bpf_trace_run, COUNT_ARGS(args))(prog, CAST_TO_U64(args));	\
+	CONCATENATE(bpf_trace_run, BPF_COUNT_ARGS(args))(prog, CAST_TO_U64(args));	\
 }
 
 /*
@@ -80,7 +105,7 @@ static struct bpf_raw_event_map	__used					\
 __bpf_trace_tp_map_##call = {						\
 	.tp		= &__tracepoint_##call,				\
 	.bpf_func	= (void *)__bpf_trace_##template,		\
-	.num_args	= COUNT_ARGS(args),				\
+	.num_args	= BPF_COUNT_ARGS(args),				\
 };
 
 

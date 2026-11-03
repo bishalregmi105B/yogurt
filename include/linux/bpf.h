@@ -75,6 +75,16 @@ struct bpf_map {
 	char name[BPF_OBJ_NAME_LEN];
 };
 
+static inline bool bpf_map_is_rdonly(const struct bpf_map *map)
+{
+	return !!(map->map_flags & BPF_F_RDONLY_PROG);
+}
+
+static inline bool bpf_map_is_wronly(const struct bpf_map *map)
+{
+	return !!(map->map_flags & BPF_F_WRONLY_PROG);
+}
+
 /* function argument constraints */
 enum bpf_arg_type {
 	ARG_DONTCARE = 0,	/* unused argument in helper function */

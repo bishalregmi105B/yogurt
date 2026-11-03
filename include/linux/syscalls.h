@@ -940,5 +940,14 @@ asmlinkage long sys_pkey_alloc(unsigned long flags, unsigned long init_val);
 asmlinkage long sys_pkey_free(int pkey);
 asmlinkage long sys_statx(int dfd, const char __user *path, unsigned flags,
 			  unsigned mask, struct statx __user *buffer);
+asmlinkage long sys_close_range(unsigned int fd, unsigned int max_fd,
+				unsigned int flags);
+asmlinkage long sys_faccessat2(int dfd, const char __user *filename, int mode,
+			       int flags);
+asmlinkage long sys_epoll_pwait2(int epfd, struct epoll_event __user *events,
+				 int maxevents,
+				 const struct timespec64 __user *timeout,
+				 const sigset_t __user *sigmask,
+				 size_t sigsetsize);
 
 #endif

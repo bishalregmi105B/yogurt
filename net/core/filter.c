@@ -56,6 +56,7 @@
 #include <net/sock_reuseport.h>
 #include <net/busy_poll.h>
 #include <net/tcp.h>
+#include <net/inet_ecn.h>
 #include <linux/bpf_trace.h>
 
 /**
@@ -2361,7 +2362,9 @@ static int bpf_skb_net_shrink(struct sk_buff *skb, u32 len_diff)
 
 static u32 __bpf_skb_max_len(const struct sk_buff *skb)
 {
-	return skb->dev->mtu + skb->dev->hard_header_len;
+	return skb->dev ? skb->dev->mtu +
+			  max_t(u16, skb->dev->hard_header_len, VLAN_ETH_HLEN)
+			: SKB_MAX_ALLOC;
 }
 
 static int bpf_skb_adjust_net(struct sk_buff *skb, s32 len_diff)
@@ -2524,7 +2527,7 @@ BPF_CALL_3(bpf_skb_change_head, struct sk_buff *, skb, u32, head_room,
 	}
 
 	bpf_compute_data_end(skb);
-	return 0;
+	return ret;
 }
 
 static const struct bpf_func_proto bpf_skb_change_head_proto = {
@@ -2534,6 +2537,38 @@ static const struct bpf_func_proto bpf_skb_change_head_proto = {
 	.arg1_type	= ARG_PTR_TO_CTX,
 	.arg2_type	= ARG_ANYTHING,
 	.arg3_type	= ARG_ANYTHING,
+};
+
+BPF_CALL_1(bpf_skb_ecn_set_ce, struct sk_buff *, skb)
+{
+	unsigned int iphdr_len;
+
+	switch (skb->protocol) {
+	case cpu_to_be16(ETH_P_IP):
+		iphdr_len = sizeof(struct iphdr);
+		break;
+	case cpu_to_be16(ETH_P_IPV6):
+		iphdr_len = sizeof(struct ipv6hdr);
+		break;
+	default:
+		return 0;
+	}
+
+	if (skb_headlen(skb) < skb_network_offset(skb) + iphdr_len)
+		return 0;
+
+	if (skb_cloned(skb) && !skb_clone_writable(skb,
+					skb_network_offset(skb) + iphdr_len))
+		return 0;
+
+	return INET_ECN_set_ce(skb);
+}
+
+static const struct bpf_func_proto bpf_skb_ecn_set_ce_proto = {
+	.func		= bpf_skb_ecn_set_ce,
+	.gpl_only	= false,
+	.ret_type	= RET_INTEGER,
+	.arg1_type	= ARG_PTR_TO_CTX,
 };
 
 BPF_CALL_2(bpf_xdp_adjust_head, struct xdp_buff *, xdp, int, offset)
@@ -3379,6 +3414,17 @@ sk_filter_func_proto(enum bpf_func_id func_id, const struct bpf_prog *prog)
 }
 
 static const struct bpf_func_proto *
+cg_skb_func_proto(enum bpf_func_id func_id, const struct bpf_prog *prog)
+{
+	switch (func_id) {
+	case BPF_FUNC_skb_ecn_set_ce:
+		return &bpf_skb_ecn_set_ce_proto;
+	default:
+		return sk_filter_func_proto(func_id, prog);
+	}
+}
+
+static const struct bpf_func_proto *
 tc_cls_act_func_proto(enum bpf_func_id func_id, const struct bpf_prog *prog)
 {
 	switch (func_id) {
@@ -3414,6 +3460,10 @@ tc_cls_act_func_proto(enum bpf_func_id func_id, const struct bpf_prog *prog)
 		return &bpf_skb_adjust_room_proto;
 	case BPF_FUNC_skb_change_tail:
 		return &bpf_skb_change_tail_proto;
+	case BPF_FUNC_skb_change_head:
+		return &bpf_skb_change_head_proto;
+	case BPF_FUNC_skb_ecn_set_ce:
+		return &bpf_skb_ecn_set_ce_proto;
 	case BPF_FUNC_skb_get_tunnel_key:
 		return &bpf_skb_get_tunnel_key_proto;
 	case BPF_FUNC_skb_set_tunnel_key:
@@ -4829,7 +4879,7 @@ const struct bpf_prog_ops xdp_prog_ops = {
 };
 
 const struct bpf_verifier_ops cg_skb_verifier_ops = {
-	.get_func_proto		= sk_filter_func_proto,
+	.get_func_proto		= cg_skb_func_proto,
 	.is_valid_access	= sk_filter_is_valid_access,
 	.convert_ctx_access	= bpf_convert_ctx_access,
 };

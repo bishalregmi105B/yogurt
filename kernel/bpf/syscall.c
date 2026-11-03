@@ -396,6 +396,10 @@ static int map_create(union bpf_attr *attr)
 	if (f_flags < 0)
 		return f_flags;
 
+	if ((attr->map_flags & BPF_F_RDONLY_PROG) &&
+	    (attr->map_flags & BPF_F_WRONLY_PROG))
+		return -EINVAL;
+
 	if (numa_node != NUMA_NO_NODE &&
 	    ((unsigned int)numa_node >= nr_node_ids ||
 	     !node_online(numa_node)))
