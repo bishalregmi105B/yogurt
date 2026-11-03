@@ -327,9 +327,16 @@ static struct dentry *cpuset_mount(struct file_system_type *fs_type,
 	struct file_system_type *cgroup_fs = get_fs_type("cgroup");
 	struct dentry *ret = ERR_PTR(-ENODEV);
 	if (cgroup_fs) {
-		char mountopts[] =
-			"cpuset,noprefix,"
-			"release_agent=/sbin/cpuset_release_agent";
+		char mountopts[256];
+		if (data && ((char *)data)[0]) {
+			snprintf(mountopts, sizeof(mountopts),
+				 "cpuset,noprefix,release_agent=/sbin/cpuset_release_agent,%s",
+				 (char *)data);
+		} else {
+			strlcpy(mountopts,
+				"cpuset,noprefix,release_agent=/sbin/cpuset_release_agent",
+				sizeof(mountopts));
+		}
 		ret = cgroup_fs->mount(cgroup_fs, flags,
 					   unused_dev_name, mountopts);
 		put_filesystem(cgroup_fs);

@@ -528,12 +528,34 @@ static bool wakeup_source_not_registered(struct wakeup_source *ws)
  * core of the event by incrementing the counter of of wakeup events being
  * processed.
  */
+static bool is_wakelock_blocked(const char *name)
+{
+	if (!name)
+		return false;
+
+	/*
+	 * MediaTek MT6768 battery drain mitigation:
+	 * Filter out non-critical network & broadcast wakelocks that prevent
+	 * Cortex-A55 cores from entering MCDI / deep suspend while screen is off.
+	 */
+	if (!strcmp(name, "wlan_wow_wl") ||
+	    !strcmp(name, "wlan_ext_wow_wl") ||
+	    !strcmp(name, "NETLINK") ||
+	    !strcmp(name, "ipa_ws"))
+		return true;
+
+	return false;
+}
+
 static void wakeup_source_activate(struct wakeup_source *ws)
 {
 	unsigned int cec;
 
 	if (WARN_ONCE(wakeup_source_not_registered(ws),
 			"unregistered wakeup source\n"))
+		return;
+
+	if (is_wakelock_blocked(ws->name))
 		return;
 
 	ws->active = true;

@@ -99,6 +99,7 @@ KBUILD_CFLAGS	+= -fno-pic
 KBUILD_AFLAGS	+= $(lseinstr) $(brokengasinst) $(vdso32)
 
 KBUILD_CFLAGS	+= $(call cc-option,-mabi=lp64)
+KBUILD_CFLAGS	+= $(call cc-option,-mtune=cortex-a75)
 KBUILD_AFLAGS	+= $(call cc-option,-mabi=lp64)
 
 ifeq ($(cc-name),clang)
