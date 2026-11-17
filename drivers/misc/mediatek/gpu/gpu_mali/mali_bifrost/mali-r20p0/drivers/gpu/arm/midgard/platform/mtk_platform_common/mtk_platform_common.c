@@ -61,6 +61,8 @@ void mtk_kbase_reset_gpu_meminfo(void)
 
 void mtk_kbase_set_gpu_meminfo(ssize_t index, int pid, int used_pages)
 {
+	if (index < 0 || index >= MTK_MEMINFO_SIZE)
+		return;
 	g_mtk_gpu_meminfo[index].pid = pid;
 	g_mtk_gpu_meminfo[index].used_pages = used_pages;
 }
@@ -143,23 +145,46 @@ static int proc_gpu_memoryusage_show(struct seq_file *m, void *v)
 	ssize_t ret = 0;
 
 #ifdef ENABLE_MTK_MEMINFO
-	int i = 0;
-	int total_size_in_bytes;
-
-	total_size_in_bytes = mtk_kbase_report_gpu_memory_usage();
+	struct list_head *entry;
+	const struct list_head *kbdev_list;
+	ssize_t mtk_kbase_gpu_meminfo_index = 0;
+	unsigned int total_used_pages = 0;
+	unsigned int total_size_in_bytes;
 
 	/* output the total memory usage and cap for this device */
 	seq_printf(m, "%10s\t%16s\n", "PID", "GPU Memory by Page");
 	seq_puts(m, "============================\n");
 
-	for (i = 0; (i < MTK_MEMINFO_SIZE) && (g_mtk_gpu_meminfo[i].pid != 0); i++) {
-		seq_printf(m, "%10d\t%16d\n", g_mtk_gpu_meminfo[i].pid,
-		g_mtk_gpu_meminfo[i].used_pages);
+	kbdev_list = kbase_dev_list_get();
+	mtk_kbase_reset_gpu_meminfo();
+	list_for_each(entry, kbdev_list) {
+		struct kbase_device *kbdev = NULL;
+		struct kbase_context *kctx;
+
+		kbdev = list_entry(entry, struct kbase_device, entry);
+		total_used_pages += (unsigned int)atomic_read(&(kbdev->memdev.used_pages));
+
+		mutex_lock(&kbdev->kctx_list_lock);
+		list_for_each_entry(kctx, &kbdev->kctx_list, kctx_list_link) {
+			int used_pages = (int)atomic_read(&(kctx->used_pages));
+
+			if (kctx->tgid != 0)
+				seq_printf(m, "%10d\t%16d\n", kctx->tgid, used_pages);
+
+			mtk_kbase_set_gpu_meminfo(mtk_kbase_gpu_meminfo_index,
+					kctx->tgid, used_pages);
+			mtk_kbase_gpu_meminfo_index++;
+		}
+		mutex_unlock(&kbdev->kctx_list_lock);
 	}
+	g_mtk_gpu_total_memory_usage_in_pages_debugfs = (int)total_used_pages;
+	kbase_dev_list_put(kbdev_list);
+
+	total_size_in_bytes = total_used_pages * 4096;
 
 	seq_puts(m, "============================\n");
 	seq_printf(m, "%10s\t%16u(%u bytes)\n", "Total",
-			g_mtk_gpu_total_memory_usage_in_pages_debugfs, total_size_in_bytes);
+			total_used_pages, total_size_in_bytes);
 	seq_puts(m, "============================\n");
 #endif /* ENABLE_MTK_MEMINFO */
 
