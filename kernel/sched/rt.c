@@ -2589,11 +2589,6 @@ const struct sched_class rt_sched_class = {
 #endif
 };
 
-#ifdef CONFIG_RT_GROUP_SCHED
-/*
- * Ensure that the real time constraints are schedulable.
- */
-static DEFINE_MUTEX(rt_constraints_mutex);
 #ifdef CONFIG_MTK_SCHED_INTEROP
 bool is_rt_throttle(int cpu)
 {
@@ -2611,6 +2606,12 @@ bool is_rt_throttle(int cpu)
 	return rt_throttle;
 }
 #endif
+
+#ifdef CONFIG_RT_GROUP_SCHED
+/*
+ * Ensure that the real time constraints are schedulable.
+ */
+static DEFINE_MUTEX(rt_constraints_mutex);
 
 /* Must be called with tasklist_lock held */
 static inline int tg_has_rt_tasks(struct task_group *tg)

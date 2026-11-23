@@ -18,8 +18,217 @@
 #include <crypto/sha.h>
 #include <crypto/skcipher.h>
 #include <linux/hie.h>
+#include <linux/capability.h>
+#include <linux/uaccess.h>
 #include "fscrypt_private.h"
 #include <linux/siphash.h>
+
+#define FSCRYPT_V1_TABLE_SIZE 64
+
+struct fscrypt_v1_table_entry {
+	bool active;
+	struct super_block *sb;
+	u8 descriptor[FS_KEY_DESCRIPTOR_SIZE];
+	struct fscrypt_key key;
+};
+
+static struct fscrypt_v1_table_entry fscrypt_v1_keys[FSCRYPT_V1_TABLE_SIZE];
+static DEFINE_SPINLOCK(fscrypt_v1_keys_lock);
+
+static int fscrypt_compute_v1_descriptor(const u8 *raw, u32 raw_size,
+					 u8 desc[FS_KEY_DESCRIPTOR_SIZE])
+{
+	struct crypto_shash *tfm;
+	u8 digest[SHA512_DIGEST_SIZE];
+	int err;
+
+	tfm = crypto_alloc_shash("sha512", 0, 0);
+	if (IS_ERR(tfm))
+		return PTR_ERR(tfm);
+
+	{
+		SHASH_DESC_ON_STACK(sdesc, tfm);
+		sdesc->tfm = tfm;
+		sdesc->flags = 0;
+		err = crypto_shash_digest(sdesc, raw, raw_size, digest);
+		if (!err)
+			err = crypto_shash_digest(sdesc, digest, sizeof(digest),
+						  digest);
+		shash_desc_zero(sdesc);
+	}
+	if (!err)
+		memcpy(desc, digest, FS_KEY_DESCRIPTOR_SIZE);
+	memzero_explicit(digest, sizeof(digest));
+	crypto_free_shash(tfm);
+	return err;
+}
+
+static int fscrypt_find_v1_table_slot(struct super_block *sb,
+				      const u8 desc[FS_KEY_DESCRIPTOR_SIZE])
+{
+	int i;
+
+	for (i = 0; i < FSCRYPT_V1_TABLE_SIZE; i++) {
+		if (fscrypt_v1_keys[i].active &&
+		    fscrypt_v1_keys[i].sb == sb &&
+		    memcmp(fscrypt_v1_keys[i].descriptor, desc,
+			   FS_KEY_DESCRIPTOR_SIZE) == 0)
+			return i;
+	}
+	return -1;
+}
+
+static int fscrypt_find_v1_table_key(struct super_block *sb,
+				     const u8 desc[FS_KEY_DESCRIPTOR_SIZE],
+				     unsigned int min_keysize,
+				     struct fscrypt_key *key_out)
+{
+	int idx;
+	int err = -ENOKEY;
+
+	spin_lock(&fscrypt_v1_keys_lock);
+	idx = fscrypt_find_v1_table_slot(sb, desc);
+	if (idx >= 0) {
+		if (fscrypt_v1_keys[idx].key.size >= min_keysize) {
+			*key_out = fscrypt_v1_keys[idx].key;
+			err = 0;
+		}
+	}
+	spin_unlock(&fscrypt_v1_keys_lock);
+	return err;
+}
+
+int fscrypt_ioctl_add_key(struct file *filp, void __user *uarg)
+{
+	struct fscrypt_add_key_arg arg;
+	struct super_block *sb = file_inode(filp)->i_sb;
+	u8 raw[FS_MAX_KEY_SIZE];
+	u8 desc[FS_KEY_DESCRIPTOR_SIZE];
+	int i, slot, err = 0;
+
+	if (!capable(CAP_SYS_ADMIN))
+		return -EACCES;
+
+	if (copy_from_user(&arg, uarg, sizeof(arg)))
+		return -EFAULT;
+
+	if (arg.key_id != 0)
+		return -EINVAL;
+
+	if (arg.key_spec.type != 0 &&
+	    arg.key_spec.type != FSCRYPT_KEY_SPEC_TYPE_DESCRIPTOR)
+		return -EINVAL;
+
+	if (arg.raw_size == 0 || arg.raw_size > FS_MAX_KEY_SIZE)
+		return -EINVAL;
+
+	memset(raw, 0, sizeof(raw));
+	if (copy_from_user(raw,
+			   ((const struct fscrypt_add_key_arg __user *)uarg)->raw,
+			   arg.raw_size)) {
+		memzero_explicit(raw, sizeof(raw));
+		return -EFAULT;
+	}
+
+	if (arg.key_spec.type == FSCRYPT_KEY_SPEC_TYPE_DESCRIPTOR) {
+		memcpy(desc, arg.key_spec.u.descriptor, FS_KEY_DESCRIPTOR_SIZE);
+	} else {
+		err = fscrypt_compute_v1_descriptor(raw, arg.raw_size, desc);
+		if (err) {
+			memzero_explicit(raw, sizeof(raw));
+			return err;
+		}
+	}
+
+	spin_lock(&fscrypt_v1_keys_lock);
+	slot = fscrypt_find_v1_table_slot(sb, desc);
+	if (slot < 0) {
+		for (i = 0; i < FSCRYPT_V1_TABLE_SIZE; i++) {
+			if (!fscrypt_v1_keys[i].active) {
+				slot = i;
+				break;
+			}
+		}
+	}
+	if (slot < 0) {
+		spin_unlock(&fscrypt_v1_keys_lock);
+		memzero_explicit(raw, sizeof(raw));
+		return -ENOSPC;
+	}
+	fscrypt_v1_keys[slot].active = true;
+	fscrypt_v1_keys[slot].sb = sb;
+	memcpy(fscrypt_v1_keys[slot].descriptor, desc, FS_KEY_DESCRIPTOR_SIZE);
+	fscrypt_v1_keys[slot].key.mode = 0;
+	memcpy(fscrypt_v1_keys[slot].key.raw, raw, FS_MAX_KEY_SIZE);
+	fscrypt_v1_keys[slot].key.size = arg.raw_size;
+	spin_unlock(&fscrypt_v1_keys_lock);
+
+	memzero_explicit(raw, sizeof(raw));
+	return 0;
+}
+
+int fscrypt_ioctl_remove_key(struct file *filp, void __user *uarg)
+{
+	struct fscrypt_remove_key_arg arg;
+	struct super_block *sb = file_inode(filp)->i_sb;
+	int slot;
+
+	if (!capable(CAP_SYS_ADMIN))
+		return -EACCES;
+
+	if (copy_from_user(&arg, uarg, sizeof(arg)))
+		return -EFAULT;
+
+	if (arg.key_spec.type != FSCRYPT_KEY_SPEC_TYPE_DESCRIPTOR)
+		return -EINVAL;
+
+	spin_lock(&fscrypt_v1_keys_lock);
+	slot = fscrypt_find_v1_table_slot(sb, arg.key_spec.u.descriptor);
+	if (slot >= 0) {
+		fscrypt_v1_keys[slot].active = false;
+		fscrypt_v1_keys[slot].sb = NULL;
+		memzero_explicit(fscrypt_v1_keys[slot].descriptor,
+				 FS_KEY_DESCRIPTOR_SIZE);
+		memzero_explicit(&fscrypt_v1_keys[slot].key,
+				 sizeof(fscrypt_v1_keys[slot].key));
+	}
+	spin_unlock(&fscrypt_v1_keys_lock);
+
+	if (slot < 0)
+		return -ENOKEY;
+
+	arg.removal_status_flags = 0;
+	if (copy_to_user(uarg, &arg, sizeof(arg)))
+		return -EFAULT;
+	return 0;
+}
+
+int fscrypt_ioctl_get_key_status(struct file *filp, void __user *uarg)
+{
+	struct fscrypt_get_key_status_arg arg;
+	struct super_block *sb = file_inode(filp)->i_sb;
+	int slot;
+
+	if (copy_from_user(&arg, uarg, sizeof(arg)))
+		return -EFAULT;
+
+	if (arg.key_spec.type != FSCRYPT_KEY_SPEC_TYPE_DESCRIPTOR)
+		return -EINVAL;
+
+	spin_lock(&fscrypt_v1_keys_lock);
+	slot = fscrypt_find_v1_table_slot(sb, arg.key_spec.u.descriptor);
+	spin_unlock(&fscrypt_v1_keys_lock);
+
+	arg.status = (slot >= 0) ? FSCRYPT_KEY_STATUS_PRESENT
+				 : FSCRYPT_KEY_STATUS_ABSENT;
+	arg.status_flags = 0;
+	arg.user_count = (slot >= 0) ? 1 : 0;
+	memset(arg.__out_reserved, 0, sizeof(arg.__out_reserved));
+
+	if (copy_to_user(uarg, &arg, sizeof(arg)))
+		return -EFAULT;
+	return 0;
+}
 
 static struct crypto_shash *essiv_hash_tfm;
 
@@ -209,6 +418,7 @@ static int find_and_derive_key(struct fscrypt_info *crypt_info,
 {
 	struct key *key;
 	const struct fscrypt_key *payload;
+	struct fscrypt_key *table_key = NULL;
 	int err;
 
 	key = find_and_lock_process_key(FS_KEY_DESC_PREFIX,
@@ -219,8 +429,22 @@ static int find_and_derive_key(struct fscrypt_info *crypt_info,
 						ctx->master_key_descriptor,
 						mode->keysize, &payload);
 	}
-	if (IS_ERR(key))
-		return PTR_ERR(key);
+	if (IS_ERR(key)) {
+		if (key != ERR_PTR(-ENOKEY))
+			return PTR_ERR(key);
+		table_key = kmalloc(sizeof(*table_key), GFP_NOFS);
+		if (!table_key)
+			return -ENOMEM;
+		if (fscrypt_find_v1_table_key(inode->i_sb,
+					      ctx->master_key_descriptor,
+					      mode->keysize,
+					      table_key) != 0) {
+			kzfree(table_key);
+			return -ENOKEY;
+		}
+		payload = table_key;
+		key = NULL;
+	}
 
 	memcpy(crypt_info->ci_raw_key,
 	       payload->raw, sizeof(crypt_info->ci_raw_key));
@@ -247,8 +471,12 @@ static int find_and_derive_key(struct fscrypt_info *crypt_info,
 		} else
 			err = 0;
 	}
-	up_read(&key->sem);
-	key_put(key);
+	if (key) {
+		up_read(&key->sem);
+		key_put(key);
+	} else {
+		kzfree(table_key);
+	}
 	return err;
 }
 

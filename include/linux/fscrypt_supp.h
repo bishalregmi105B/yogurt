@@ -91,6 +91,9 @@ extern int fscrypt_is_sw_encrypt(const struct inode *inode);
 extern int fscrypt_get_encryption_info(struct inode *);
 extern void fscrypt_put_encryption_info(struct inode *);
 extern void *fscrypt_crypt_info_act(void *ci, int act);
+extern int fscrypt_ioctl_add_key(struct file *filp, void __user *arg);
+extern int fscrypt_ioctl_remove_key(struct file *filp, void __user *arg);
+extern int fscrypt_ioctl_get_key_status(struct file *filp, void __user *arg);
 
 /* fname.c */
 extern int fscrypt_setup_filename(struct inode *, const struct qstr *,
